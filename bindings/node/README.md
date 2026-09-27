@@ -59,7 +59,13 @@ await db.close();
 
 In production, use an S3-compatible storage profile and set
 `redisAddress` so all API instances share leases. The `file` provider is
-intended for local development and tests.
+intended for local development and tests; the `memory` provider is an
+in-process replica for unit tests (state is lost on exit, no object storage
+or network needed). For S3, the signing region resolves in order: the
+profile's `region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then
+Litestream's default (a bucket-region lookup for real S3, `us-east-1` for a
+custom endpoint). Set `AWS_REGION` to pin signing when the descriptor omits
+a region.
 
 ## RuntimeOptions
 
@@ -149,7 +155,9 @@ Failed operations reject with `WalrusdError`. Its `code` is one of the
 stable `DB_*` classes below, and busy errors may include `retryAfterMs`.
 The runtime automatically retries the five retryable classes using the same
 idempotency key. The other three are terminal until the caller or
-configuration is corrected.
+configuration is corrected. Errors tied to a database name it in the
+message (`database_id "users/u1": ...`) so logs identify the failing
+content database.
 
 | Code | Retryable | Meaning |
 |---|---|---|

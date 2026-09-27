@@ -178,7 +178,10 @@ bun run quickstart.ts
 
 For production, swap `provider: "file"` for `"s3"` with your bucket
 endpoint and org-scoped credentials, and pass `redisAddress` (plus
-optional `redisPassword`/`redisDB`) so all instances share leases.
+optional `redisPassword`/`redisDB`) so all instances share leases. The S3
+signing region comes from the profile's `region`, else `AWS_REGION`, else
+`AWS_DEFAULT_REGION`. `provider: "memory"` runs the same write/flush/read
+path fully in-process for unit tests, with no object storage or network.
 The same code runs unchanged on Node.js.
 An executable conformance suite for Bun lives in
 `bindings/bun/walrusd.test.ts` (`bun test bindings/bun/walrusd.test.ts` after

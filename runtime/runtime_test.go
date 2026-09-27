@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,5 +207,103 @@ func TestLeaseKeysIncludeRootPrefix(t *testing.T) {
 	}
 	if _, _, err := store.Get(context.Background(), db.LeaseKey("")); !errors.Is(err, lease.ErrNotFound) {
 		t.Fatalf("unscoped lease key exists: %v", err)
+	}
+}
+
+// The memory provider runs the entire write/flush/read path in-process with
+// no object storage and no Redis: two runtimes sharing one memory lease
+// store behave like two API instances sharing a bucket.
+func TestMemoryProviderEndToEnd(t *testing.T) {
+	store := lease.NewMemoryStore()
+	prefix := fmt.Sprintf("memory-e2e-%d", time.Now().UnixNano())
+	d := runtime.DatabaseDescriptor{
+		DatabaseID:  "users/memory",
+		Storage:     litestream.Profile{Provider: "memory", RootPrefix: prefix},
+		Credentials: runtime.StaticCredentials{},
+	}
+	newInstance := func(owner string) *runtime.Runtime {
+		t.Helper()
+		cfg := runtime.DefaultConfig()
+		cfg.RetryPolicy = runtime.RetryPolicy{}
+		rt, err := runtime.New(store, owner, cfg)
+		if err != nil {
+			t.Fatalf("new runtime %s: %v", owner, err)
+		}
+		t.Cleanup(func() { _ = rt.Close() })
+		return rt
+	}
+	ctx := context.Background()
+	a := newInstance("api-1")
+	b := newInstance("api-2")
+
+	if _, err := a.WithWrite(ctx, d, "schema", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)`)
+		return err
+	}); err != nil {
+		t.Fatalf("schema write: %v", err)
+	}
+	res, err := a.WithWrite(ctx, d, "set-greeting", func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `INSERT INTO kv (k, v) VALUES ('greeting', 'hello memory')`)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if res.TXID == "" {
+		t.Fatal("expected a flushed TXID")
+	}
+
+	// A second instance with the same store and replica dedupes the retry.
+	dup, err := b.WithWrite(ctx, d, "set-greeting", func(*sql.Conn) error { return nil })
+	if err != nil {
+		t.Fatalf("dedupe write: %v", err)
+	}
+	if !dup.Deduplicated || dup.TXID != res.TXID {
+		t.Fatalf("dedupe = %+v, want txid %s deduplicated", dup, res.TXID)
+	}
+
+	// And it reads the flushed remote state.
+	var got string
+	if err := b.WithRead(ctx, d, func(conn *sql.Conn) error {
+		return conn.QueryRowContext(ctx, `SELECT v FROM kv WHERE k = 'greeting'`).Scan(&got)
+	}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got != "hello memory" {
+		t.Fatalf("read = %q, want %q", got, "hello memory")
+	}
+}
+
+// Failures must name the content database so a multi-tenant operator can
+// tell which one broke.
+func TestErrorsNameDatabase(t *testing.T) {
+	rt := newTestRuntime(t, "api-1")
+	d := runtime.DatabaseDescriptor{
+		DatabaseID:  "users/named",
+		Storage:     litestream.Profile{Provider: "bogus"},
+		Credentials: runtime.StaticCredentials{},
+	}
+	_, err := rt.WithWrite(context.Background(), d, "op", func(*sql.Conn) error { return nil })
+	if err == nil {
+		t.Fatal("expected unsupported provider to fail")
+	}
+	if got := class(err); got != "DB_CONFIGURATION_INVALID" {
+		t.Fatalf("class = %q, want DB_CONFIGURATION_INVALID", got)
+	}
+	var we *walrusderr.Error
+	if !errors.As(err, &we) {
+		t.Fatalf("error is not a walrusderr.Error: %v", err)
+	}
+	if we.DatabaseID() != "users/named" {
+		t.Fatalf("DatabaseID() = %q, want users/named", we.DatabaseID())
+	}
+	if !strings.Contains(err.Error(), `database_id "users/named"`) {
+		t.Fatalf("message does not name the database: %v", err)
+	}
+
+	if err := rt.WithRead(context.Background(), d, func(*sql.Conn) error { return nil }); err == nil {
+		t.Fatal("expected read to fail too")
+	} else if !strings.Contains(err.Error(), `database_id "users/named"`) {
+		t.Fatalf("read error does not name the database: %v", err)
 	}
 }

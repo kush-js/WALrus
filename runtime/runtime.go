@@ -294,11 +294,12 @@ func (r *Runtime) Close() error {
 // which enables SQLite's URI filenames) can open natively in litestream read
 // mode: reads stream LTX pages straight from object storage through the shared
 // VFS. The DSN is read-only; writes must go through WithWrite (spec §8).
-func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (string, error) {
+func (r *Runtime) ReadDSN(ctx context.Context, d DatabaseDescriptor) (_ string, retErr error) {
 	db, err := d.Identity()
 	if err != nil {
 		return "", walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
+	defer func() { retErr = walrusderr.WithDatabase(retErr, db.String()) }()
 	entry, err := r.database(d, db)
 	if err != nil {
 		return "", err
@@ -318,6 +319,7 @@ func (r *Runtime) WithRead(ctx context.Context, d DatabaseDescriptor, fn func(*s
 			r.metrics.Record(metricsID, func(m *observability.Metrics) { m.ReadFailures++ })
 		}
 	}()
+	defer func() { err = walrusderr.WithDatabase(err, metricsID) }()
 	entry, err := r.database(d, db)
 	if err != nil {
 		return err
@@ -413,7 +415,7 @@ type WriteResult struct {
 // Retryable failures repeat the whole operation with the same idempotency
 // key. On any failure from acquisition through flush it never reports
 // success, never releases with a stale token, and discards the write session.
-func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempotencyKey string, fn func(*sql.Conn) error) (WriteResult, error) {
+func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempotencyKey string, fn func(*sql.Conn) error) (_ WriteResult, retErr error) {
 	var zero WriteResult
 	if idempotencyKey == "" {
 		return zero, walrusderr.New(walrusderr.ClassInvalidArgument, "idempotency key is required for mutations")
@@ -426,6 +428,7 @@ func (r *Runtime) WithWrite(ctx context.Context, d DatabaseDescriptor, idempoten
 		return zero, walrusderr.Wrap(walrusderr.ClassInvalidArgument, "database id", err)
 	}
 	dbKey := db.String()
+	defer func() { retErr = walrusderr.WithDatabase(retErr, dbKey) }()
 	policy := r.cfg.RetryPolicy.withDefaults()
 	start := time.Now()
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Added an in-process `memory` storage provider (`litestream.Profile{Provider: "memory"}`): a litestream replica held in a process-global map with no object storage and no network. Unit tests now exercise the full lease/transaction/flush/read path without MinIO and Redis, and multiple runtimes in one process share the replica like separate API instances share a bucket. State is lost on exit.
+- S3 signing region now falls back to the environment when the descriptor omits it: explicit `region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then Litestream's default (bucket lookup for real S3, `us-east-1` for a custom endpoint). Set `AWS_REGION` to pin signing for deployments whose profiles carry no region.
+- Errors for a specific database now name it in the message (`DB_REMOTE_UNAVAILABLE: database_id "users/u1": ...`), so multi-tenant logs and alerts identify which content database failed. The `DB_*` class, cause, and `Retry-After` hint are unchanged.
+
 ## 0.4.0
 
 - Exposed five previously Go-only runtime tuning knobs through the C ABI and JS bindings: `max_read_instances` (200), `read_instance_idle_ttl_ms` (60000), `vfs_page_cache_bytes` (10485760), `write_sync_interval_ms` (1000), and `max_temp_write_buffer` (268435456). JS consumers previously could not tune these options.

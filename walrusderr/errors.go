@@ -3,7 +3,11 @@
 // bindings can make retry decisions without string matching.
 package walrusderr
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+)
 
 // Class is a stable, machine-readable error classification.
 type Class string
@@ -48,14 +52,25 @@ type Error struct {
 	Cause error
 	// retryAfterMs is the Retry-After hint for ClassBusy, in milliseconds.
 	retryAfterMs int64
+	// databaseID is the database this error concerns, when known. It is
+	// rendered into the message so a failure names the content database it
+	// came from.
+	databaseID string
 }
 
 func (e *Error) Error() string {
-	if e.Cause != nil {
-		return string(e.Class) + ": " + e.Message + ": " + e.Cause.Error()
+	msg := e.Message
+	if e.databaseID != "" {
+		msg = "database_id " + strconv.Quote(e.databaseID) + ": " + msg
 	}
-	return string(e.Class) + ": " + e.Message
+	if e.Cause != nil {
+		return string(e.Class) + ": " + msg + ": " + e.Cause.Error()
+	}
+	return string(e.Class) + ": " + msg
 }
+
+// DatabaseID returns the database ID annotated on e, if any.
+func (e *Error) DatabaseID() string { return e.databaseID }
 
 func (e *Error) Unwrap() error { return e.Cause }
 
@@ -90,4 +105,24 @@ func ClassOf(err error) Class {
 		return e.Class
 	}
 	return ""
+}
+
+// WithDatabase annotates err with the database ID it concerns so callers and
+// operators can tell which content database failed. The class, cause, and
+// Retry-After hint are preserved; a non-walrusd error is wrapped so its
+// identity and chain stay intact. Re-annotating with the same ID is a no-op.
+func WithDatabase(err error, databaseID string) error {
+	if err == nil || databaseID == "" {
+		return err
+	}
+	e, ok := err.(*Error)
+	if !ok {
+		return fmt.Errorf("database_id %q: %w", databaseID, err)
+	}
+	if e.databaseID == databaseID {
+		return e
+	}
+	dup := *e
+	dup.databaseID = databaseID
+	return &dup
 }

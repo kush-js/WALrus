@@ -32,6 +32,41 @@ func TestWrapPreservesCause(t *testing.T) {
 	}
 }
 
+func TestWithDatabase(t *testing.T) {
+	busy := walrusderr.Busy("lease held", 250)
+	annotated := walrusderr.WithDatabase(busy, "users/u1")
+	if got := walrusderr.ClassOf(annotated); got != walrusderr.ClassBusy {
+		t.Fatalf("ClassOf() = %q, want %q", got, walrusderr.ClassBusy)
+	}
+	if hint, ok := annotated.(walrusderr.RetryAfterHint); !ok {
+		t.Fatal("annotated error lost its Retry-After hint")
+	} else if ms, ok := hint.RetryAfter(); !ok || ms != 250 {
+		t.Fatalf("RetryAfter() = %d, %v; want 250, true", ms, ok)
+	}
+	want := `DB_BUSY: database_id "users/u1": lease held`
+	if got := annotated.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+
+	// The original error is not mutated, and re-annotating is idempotent.
+	if got := busy.Error(); got != "DB_BUSY: lease held" {
+		t.Fatalf("original mutated: %q", got)
+	}
+	if again := walrusderr.WithDatabase(annotated, "users/u1"); again != annotated {
+		t.Fatalf("re-annotation returned a new error: %v", again)
+	}
+
+	// Non-classified errors keep their chain.
+	plain := errors.New("driver blew up")
+	wrapped := walrusderr.WithDatabase(plain, "users/u1")
+	if !errors.Is(wrapped, plain) {
+		t.Fatal("wrapped non-walrusd error lost its cause")
+	}
+	if got := wrapped.Error(); got != `database_id "users/u1": driver blew up` {
+		t.Fatalf("Error() = %q", got)
+	}
+}
+
 func TestRetryAfterHint(t *testing.T) {
 	var retryErr walrusderr.RetryAfterHint = walrusderr.Busy("database is busy", 250)
 	if got, ok := retryErr.RetryAfter(); !ok || got != 250 {

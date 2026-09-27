@@ -7,6 +7,7 @@ package litestream
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -109,6 +110,11 @@ func (b *Bridge) ReplicaClient(dbKey, replicaPrefix string, p Profile) (litestre
 			return nil, fmt.Errorf("litestream: file provider requires FileRoot")
 		}
 		return file.NewReplicaClient(root + "/" + replicaPrefix), nil
+	case "memory":
+		// In-process replica: unit tests and local development. Shares one
+		// process-global object map across runtimes so multiple instances
+		// observe the same replica without object storage or a network.
+		return NewMemoryReplicaClient(replicaPrefix), nil
 	case "s3":
 	default:
 		return nil, fmt.Errorf("litestream: unsupported provider %q", p.Provider)
@@ -118,12 +124,27 @@ func (b *Bridge) ReplicaClient(dbKey, replicaPrefix string, p Profile) (litestre
 	client.SecretAccessKey = p.SecretAccessKey
 	client.Bucket = p.Bucket
 	client.Path = replicaPrefix
-	client.Region = p.Region
+	client.Region = resolveS3Region(p.Region)
 	if p.Endpoint != "" {
 		client.Endpoint = p.Endpoint
 		client.ForcePathStyle = true
 	}
 	return client, nil
+}
+
+// resolveS3Region applies the S3 signing-region fallback chain: an explicit
+// profile region wins, then AWS_REGION, then AWS_DEFAULT_REGION. An empty
+// result lets Litestream decide (a bucket-region lookup for real S3, or
+// us-east-1 for a custom endpoint). Set AWS_REGION to pin signing for
+// deployments whose descriptor omits region.
+func resolveS3Region(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if region := os.Getenv("AWS_REGION"); region != "" {
+		return region
+	}
+	return os.Getenv("AWS_DEFAULT_REGION")
 }
 
 func sanitize(s string) string {

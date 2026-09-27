@@ -26,13 +26,21 @@ interface Envelope {
 }
 
 export interface StorageProfile {
-  provider: "s3" | "file";
+  /** `s3` (any S3-compatible store), `file` (local filesystem), or
+   *  `memory` (in-process, tests and local development; state is lost on
+   *  exit and shared only within the process). */
+  provider: "s3" | "file" | "memory";
   endpoint?: string;
+  /** Signing region. Omitted, the core falls back to `AWS_REGION`, then
+   *  `AWS_DEFAULT_REGION`, then Litestream's default: a bucket-region lookup
+   *  for real S3, or `us-east-1` for a custom endpoint. Set `AWS_REGION` to
+   *  pin signing when the descriptor omits a region. */
   region?: string;
   bucket?: string;
   root_prefix?: string;
   access_key_id?: string;
   secret_access_key?: string;
+  /** Local filesystem root; required by the `file` provider. */
   file_root?: string;
 }
 
@@ -122,7 +130,9 @@ export interface RuntimeOptions {
   redisPassword?: string;
   redisDB?: number;
 }
-/** Classified walrusd error (spec §11 required errors). */
+/** Classified walrusd error (spec §11 required errors). For failures tied
+ *  to a database, `message` names it (`database_id "users/u1": ...`) so
+ *  multi-tenant logs identify which content database failed. */
 export class WalrusdError extends Error {
   readonly code: string;
   readonly retryAfterMs?: number;

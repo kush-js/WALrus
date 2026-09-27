@@ -172,7 +172,7 @@ timeout plus skew allowance; defaults (30s lease, 20s request timeout,
 d := runtime.DatabaseDescriptor{
     DatabaseID: "users/user_1a4b", // your ID; objects land at <root_prefix>/users/user_1a4b/
     Storage: litestream.Profile{
-        Provider:   "s3",         // "s3" (any S3-compatible) or "file"
+        Provider:   "s3",         // "s3" (any S3-compatible), "file" (local), or "memory" (tests)
         Endpoint:   "https://<account>.r2.cloudflarestorage.com",
         Bucket:     "my-org-bucket",
         RootPrefix: "tenants/acme",
@@ -208,6 +208,22 @@ descriptor = {
 `Credentials` is a `CredentialSource` interface, so you can plug a token
 refresher instead of `StaticCredentials`. It is resolved at call time and
 never persisted (spec §11).
+
+Storage providers:
+
+- `s3` — any S3-compatible store. Set `Endpoint` for MinIO/R2/Wasabi and
+  leave `Bucket`/`RootPrefix` to the control plane. The signing region
+  resolves in order: `Storage.Region`, then `AWS_REGION`, then
+  `AWS_DEFAULT_REGION`, then Litestream's default (a bucket-region lookup
+  for real S3, `us-east-1` for a custom endpoint). Set `AWS_REGION` to pin
+  signing when the descriptor omits a region.
+- `file` — a local filesystem root (`FileRoot`); local development and
+  single-node tests.
+- `memory` — an in-process replica with no object storage and no network,
+  for unit tests. State lives only in this process and is lost on exit; it
+  is shared by every runtime in the process, so give each test run a unique
+  `RootPrefix`. Combined with the memory lease store, it runs the full
+  write/flush/read path with no external dependencies.
 
 ### Read
 
@@ -417,6 +433,11 @@ again. Terminal errors are never retried.
 | `DB_CONFIGURATION_INVALID` | Bad profile/capability/config | Do not retry; fix configuration |
 | `DB_INVALID_ARGUMENT` | Bad descriptor, key, or SQL | Do not retry; fix the caller |
 | `DB_IDEMPOTENCY_MISMATCH` | Same key reused with different statements | Do not retry; caller bug |
+
+Errors raised for a specific database name it in the message —
+`DB_REMOTE_UNAVAILABLE: database_id "users/u1": probe replica: ...` — so a
+multi-tenant log or alert identifies which content database failed. The
+`Class` and `Retry-After` hint are unchanged.
 
 :::variants
 ```go
